@@ -2,7 +2,6 @@ import matplotlib
 import numpy as np
 import pandas as pd
 from collections import Counter
-import math
 
 from jedi.refactoring import inline
 from tqdm import tqdm
@@ -119,7 +118,7 @@ class TfIdf:
                 if doc in self.doc_norms:
                     self.doc_norms[doc] += self.inverted_index[word][doc]**2
                 tf = self.inverted_index[word][doc] / self.document_term_frequency[doc]
-                idf = math.log(len(self.document_term_frequency) / len(self.inverted_index[word]), 10)
+                idf = np.log10(len(self.document_term_frequency) / len(self.inverted_index[word]))
                 self.inverted_index[word][doc] = tf*idf
         for doc in self.doc_norms.keys():
             self.doc_norms[doc] = np.sqrt(self.doc_norms[doc])
