@@ -126,13 +126,14 @@ class TfIdf:
     def save_bow(self):
         pd.DataFrame([self.inverted_index]).T.to_csv(self.bow_path)
 
+
 tf_idf = TfIdf()
 tf_idf.fit()
 print('unigram_count: ' + str(len(tf_idf.unigram_count)))
 print('potential : ' + str(len(tf_idf.unigram_count) * (len(tf_idf.unigram_count) - 1)))
 print('bigram_count: ' + str(len(tf_idf.bigram_count)))
 print('trigram_count: ' + str(len(tf_idf.trigram_count)))
-print('done 1.1')
+print('Done 1.1')
 
 class DocumentRetriever:
     def __init__(self, tf_idf):
@@ -164,18 +165,15 @@ class DocumentRetriever:
 
         return result
 
-
     def sort_and_retrieve_k_best(self, scores: Dict[str, float],k :int):
         sorted_list_keys =  {key : v for key, v in sorted(scores.items(), key = lambda item: item[1], reverse=True)[:k]}
         return list(sorted_list_keys.keys())
-
 
     def reduce_query_to_counts(self, query : List)->  Counter:
         query_counts = Counter()
         for i, word in enumerate(query):
             query_counts[word] += 1
         return query_counts
-
 
     def get_top_k_documents(self,query : str, metric: str , k = 5) -> List[str]:
         query = self.sentence_preprocesser(query)
@@ -185,8 +183,8 @@ class DocumentRetriever:
         ducuments_with_similarity = self.rank(query_bow,relavant_documents, metric)
         return self.sort_and_retrieve_k_best(ducuments_with_similarity,k)
 
-dr = DocumentRetriever(tf_idf)
 
+dr = DocumentRetriever(tf_idf)
 query = "Better stop dreaming of the quiet life, 'cause it's the one we'll never know And quit running for that runaway bus 'cause those rosy days are few And stop apologizing for the things you've never done 'Cause time is short and life is cruel but it's up to us to change This town called malice"
 
 cosine_top_k = dr.get_top_k_documents(query, 'cosine')
@@ -198,4 +196,77 @@ for index, song in enumerate(pd.read_csv(INPUT_FILE_PATH,usecols = [5]).iloc[cos
     sep = "#"*50
     print(F"{sep}\nsong #{index} \n{song} \n{sep}")
 
-print ('done part 1.2')
+print('Done part 1.2')
+
+
+def get_bigrams(word):
+    for ngram in nltk.ngrams(word, 2):
+        yield "".join(list(ngram))
+
+def get_trigrams(word):
+    for ngram in nltk.ngrams(word, 3):
+        yield "".join(list(ngram))
+
+"""
+for example - get_bigrams is a generator, which is an object we can loop on:
+for ngram in get_bigrams(word):
+    DO SOMETHING
+"""
+
+class NgramSpellingCorrector:
+    def __init__(self, unigram_counts: Counter, get_n_gram: callable):
+        self.unigram_counts = unigram_counts
+        self.ngram_index = {}
+        self.get_n_grams = get_n_gram
+
+    def build_index(self) -> None:
+        for word in self.unigram_counts.keys():
+            for ngram in self.get_n_grams(word):
+                if self.ngram_index.get(ngram):
+                    self.ngram_index[ngram].append(word)
+                else:
+                    self.ngram_index[ngram] = [word]
+
+
+    def get_top_k_words(self,word:str,k=5) -> List[str]:
+        total_words = sum(self.unigram_counts.values())
+        list_x = [ngram for ngram in self.get_n_grams(word)]
+        similarity_dict = {}
+        for ngram in list_x:
+            if self.ngram_index.get(ngram):
+                for real_word in self.ngram_index.get(ngram):
+                    if not similarity_dict.get(real_word):
+                        prior = self.unigram_counts[real_word] / total_words
+                        list_y = [ngram for ngram in self.get_n_grams(real_word)]
+                        similarity_dict[real_word] = prior * jaccard_similarity(list_x, list_y)
+
+        return {key : v for key, v in sorted(similarity_dict.items(), key = lambda item: item[1], reverse=True)[:k]}
+
+
+def jaccard_similarity(list1, list2):
+    intersection = len(list(set(list1).intersection(list2)))
+    union = (len(list1) + len(list2)) - intersection
+    return float(intersection) / union
+
+
+class BigramSpellingCorrector(NgramSpellingCorrector):
+    def __init__(self, unigram_counts: Counter):
+        super().__init__(unigram_counts, get_bigrams)
+
+
+class TrigramSpellingCorrector(NgramSpellingCorrector):
+    def __init__(self, unigram_counts: Counter):
+        super().__init__(unigram_counts, get_trigrams)
+
+
+out_of_vocab_word = 'supercalifragilisticexpialidocious'
+print("out of vocabulary word is: " + out_of_vocab_word)
+bigram_spelling_corrector = BigramSpellingCorrector(tf_idf.unigram_count)
+bigram_spelling_corrector.build_index()
+bigram_spelling_corrector.get_top_k_words(out_of_vocab_word)
+#print("Bigram similarity is: " + str(bigram_spelling_corrector.get_top_k_words(out_of_vocab_word).keys()))
+trigram_spelling_corrector = TrigramSpellingCorrector(tf_idf.unigram_count)
+trigram_spelling_corrector.build_index()
+trigram_spelling_corrector.get_top_k_words(out_of_vocab_word)
+#print("Trigram similarity is: " + str(trigram_spelling_corrector.get_top_k_words(out_of_vocab_word).keys()))
+print('Done 1.4')
