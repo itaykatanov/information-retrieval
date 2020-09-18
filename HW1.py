@@ -2,6 +2,7 @@ import matplotlib
 import numpy as np
 import pandas as pd
 from collections import Counter
+import math
 
 from jedi.refactoring import inline
 from tqdm import tqdm
@@ -19,7 +20,9 @@ nltk.download("punkt")
 from string import punctuation, ascii_lowercase
 from nltk.corpus import stopwords
 
-DEBUG = False
+DEBUG = True
+
+
 """
 Recommended to start with a small number to get a feeling for the preprocessing with prints (N_ROWS_FOR_DEBUG = 2)
 later increase this number for 5*10**3 in order to see that the code runs at reasonable speed. 
@@ -89,7 +92,7 @@ class TfIdf:
                 self.bigram_count[bigram] += 1
                 if i < sentence_len - 2:
                     trigram = bigram + "," +sentence[i+2]
-                    self.trigram_count[trigram] +=1
+                    self.trigram_count[trigram] += 1
 
 
     def fit(self) -> None:
@@ -115,11 +118,12 @@ class TfIdf:
     def update_inverted_index_with_tf_idf_and_compute_document_norm(self):
         for word in self.inverted_index.keys():
             for doc in self.inverted_index[word].keys():
-                if doc in self.doc_norms:
-                    self.doc_norms[doc] += self.inverted_index[word][doc]**2
                 tf = self.inverted_index[word][doc] / self.document_term_frequency[doc]
-                idf = np.log10(len(self.document_term_frequency) / len(self.inverted_index[word]))
+                idf = np.log10(self.n_docs/self.word_document_frequency[word])
                 self.inverted_index[word][doc] = tf*idf
+                self.doc_norms[doc] += np.square(self.inverted_index[word][doc])
+
+
         for doc in self.doc_norms.keys():
             self.doc_norms[doc] = np.sqrt(self.doc_norms[doc])
 
@@ -127,13 +131,30 @@ class TfIdf:
         pd.DataFrame([self.inverted_index]).T.to_csv(self.bow_path)
 
 
+from six.moves import cPickle
+
+#run calss - comment this after first run
 tf_idf = TfIdf()
 tf_idf.fit()
+
+#save object - comment this after first run
+# f = open('obj_debug.save', 'wb')
+# cPickle.dump(tf_idf, f, protocol=cPickle.HIGHEST_PROTOCOL)
+# f.close()
+#Read boject
+#f = open('obj_debug.save', 'rb')
+#tf_idf = cPickle.load(f)
+#f.close()
+
+
 print('unigram_count: ' + str(len(tf_idf.unigram_count)))
 print('potential : ' + str(len(tf_idf.unigram_count) * (len(tf_idf.unigram_count) - 1)))
 print('bigram_count: ' + str(len(tf_idf.bigram_count)))
 print('trigram_count: ' + str(len(tf_idf.trigram_count)))
 print('Done 1.1')
+
+
+
 
 class DocumentRetriever:
     def __init__(self, tf_idf):
@@ -147,23 +168,16 @@ class DocumentRetriever:
     def rank(self,query : Dict[str,int],documents: List[Counter],metric: str ) -> Dict[str, float]:
         result = {} # key: DocID , value : float , simmilarity to query
         query_len = np.sum(np.array(list(query.values())))
-        query_tf = list(query.values()) / query_len
-        query_idf = np.log10(np.array([self.n_docs+1]*len(documents)) / np.array([len(value) for key, value in documents.items()]))
-        query_tfidf = dict(list(zip(list(query.keys()), list(query_tf * query_idf))))
-        result_array = [0] * (self.n_docs + 1)
         for word, v in documents.items():
-            word_tfidf = query_tfidf[word]
+            query[word]=query[word]/query_len*np.log10(self.n_docs/self.word_document_frequency[word])
             for doc in documents[word]:
-                result_array[doc] += word_tfidf * documents[word][doc]
-        result = {i:v for i, v in enumerate(result_array) if v != 0}
-
+                result[doc]=result.get(doc,0)+query[word]*self.inverted_index[word][doc]
         if metric == 'cosine':
-            query_norm = np.sqrt(np.sum(np.square(list(query_tfidf.values()))))
-            denominator = query_norm * np.array([value for key, value in self.doc_norms.items()])
-            result_array = result_array / denominator
-            result = {i:v for i, v in enumerate(result_array) if v != 0}
+            for doc in result.keys():
+                result[doc]=result[doc]/self.doc_norms[doc]
 
         return result
+
 
     def sort_and_retrieve_k_best(self, scores: Dict[str, float],k :int):
         sorted_list_keys =  {key : v for key, v in sorted(scores.items(), key = lambda item: item[1], reverse=True)[:k]}
@@ -240,7 +254,7 @@ class NgramSpellingCorrector:
                         list_y = [ngram for ngram in self.get_n_grams(real_word)]
                         similarity_dict[real_word] = prior * jaccard_similarity(list_x, list_y)
 
-        return {key : v for key, v in sorted(similarity_dict.items(), key = lambda item: item[1], reverse=True)[:k]}
+        return sorted(similarity_dict.keys(),key=lambda item : similarity_dict[item],reverse=True)[:k]
 
 
 def jaccard_similarity(list1, list2):
@@ -264,9 +278,67 @@ print("out of vocabulary word is: " + out_of_vocab_word)
 bigram_spelling_corrector = BigramSpellingCorrector(tf_idf.unigram_count)
 bigram_spelling_corrector.build_index()
 bigram_spelling_corrector.get_top_k_words(out_of_vocab_word)
-#print("Bigram similarity is: " + str(bigram_spelling_corrector.get_top_k_words(out_of_vocab_word).keys()))
 trigram_spelling_corrector = TrigramSpellingCorrector(tf_idf.unigram_count)
 trigram_spelling_corrector.build_index()
 trigram_spelling_corrector.get_top_k_words(out_of_vocab_word)
-#print("Trigram similarity is: " + str(trigram_spelling_corrector.get_top_k_words(out_of_vocab_word).keys()))
 print('Done 1.4')
+
+
+
+print('Start part 1.5')
+
+# for the probability smoothing
+NUMERATOR_SMOOTHING = 1 # alpha in https://en.wikipedia.org/wiki/Additive_smoothing
+DENOMINATOR_SMOOTHING = 10**4 # d in https://en.wikipedia.org/wiki/Additive_smoothing
+def sentence_log_probabilty(unigrams : Counter, bigrams  : Counter,trigrams : Counter, sentence: str):
+    bigram_log_likelilhood, trigram_log_likelilhood = 0, 0
+    words_in_sentence = sentence.split()
+    n_words = len(words_in_sentence)
+    for index, word in  enumerate(words_in_sentence):
+        if index == 0:
+            bigram_log_likelilhood += np.log((unigrams[word] + NUMERATOR_SMOOTHING) / (sum(unigrams.values()) + DENOMINATOR_SMOOTHING))
+        elif index == 1:
+            bigram_log_likelilhood += np.log(((bigrams[words_in_sentence[index-1]+","+word]  / sum(bigrams.values())) + NUMERATOR_SMOOTHING)/
+                                             ((unigrams[words_in_sentence[index-1]] / sum(unigrams.values())) + DENOMINATOR_SMOOTHING))
+            trigram_log_likelilhood += np.log((bigrams[words_in_sentence[index-1]+","+word] + NUMERATOR_SMOOTHING) / (sum(bigrams.values()) + DENOMINATOR_SMOOTHING))
+            print ("test for itay: " + str(trigram_log_likelilhood))
+        else:
+            bigram_log_likelilhood += np.log(((bigrams[words_in_sentence[index-1]+","+word]  / sum(bigrams.values())) + NUMERATOR_SMOOTHING)/
+                                              ((unigrams[words_in_sentence[index-1]] / sum(unigrams.values())) + DENOMINATOR_SMOOTHING))
+            trigram_log_likelilhood += np.log(((trigrams[words_in_sentence[index-2]+","+words_in_sentence[index-1]+","+word] / sum(trigrams.values()))+ NUMERATOR_SMOOTHING) /
+                                              ((bigrams[words_in_sentence[index-2]+","+words_in_sentence[index-1]] / sum(bigrams.values())) + DENOMINATOR_SMOOTHING))
+
+            
+    print(F"Bigram log likelihood is {bigram_log_likelilhood}")
+    print(F"Trigram log likelihood is {trigram_log_likelilhood}")
+    return
+
+
+
+sentence = "spiderman spiderman does whatever a spider can"
+
+sentence_log_probabilty(tf_idf.unigram_count, tf_idf.bigram_count, tf_idf.trigram_count, sentence)
+
+## 1.51 Language model: B
+#For each model what is the next word prediciton for the sentnence "i am"?
+sentence_to_predict = "i am"
+
+bigram_list = [bigram for bigram in tf_idf.bigram_count.keys() if str(bigram).startswith(sentence_to_predict.split()[-1] + ",")]
+trigram_list = [trigram for trigram in tf_idf.trigram_count.keys() if str(trigram).startswith(sentence_to_predict.split()[-2] + "," + sentence_to_predict.split()[-1] + ",")]
+
+dict_bigram = {bigram : np.log((tf_idf.bigram_count[bigram] + NUMERATOR_SMOOTHING) /(tf_idf.unigram_count[bigram.split(',')[0]] + NUMERATOR_SMOOTHING*DENOMINATOR_SMOOTHING)) for bigram in bigram_list}
+if (bool(dict_bigram)): next_bigram_word = max(dict_bigram, key=dict_bigram.get)
+else: next_bigram_word = max(tf_idf.unigram_count, key=tf_idf.unigram_count.get)
+
+
+dict_trigram = {trigram : np.log((tf_idf.trigram_count[trigram] + NUMERATOR_SMOOTHING) / (tf_idf.bigram_count[trigram.split(',')[0]+","+trigram.split(',')[1]] + NUMERATOR_SMOOTHING*DENOMINATOR_SMOOTHING)) for trigram in trigram_list}
+if (bool(dict_trigram)): next_trigram_word = max(dict_trigram, key=dict_trigram.get)
+else: next_trigram_word = max(tf_idf.unigram_count, key=tf_idf.unigram_count.get)
+
+
+print("Next word predicition according to bigram model is: " + next_bigram_word.split(',')[-1])
+print("The full sentece is: " + sentence_to_predict + " " + next_bigram_word.split(',')[-1])
+print("Next word predicition according to trigram model is: " + next_trigram_word.split(',')[-1])
+print("The full sentece is: " + sentence_to_predict + " " + next_trigram_word.split(',')[-1])
+
+print('Done 1.5')
